@@ -1,0 +1,186 @@
+---
+description: This rule describes the different features in the application, when a feature will be developt take this file as a starting point
+alwaysApply: false
+---
+## 1. Screens
+
+### **1) Bill Setup**
+- Upload photos (camera or gallery)
+- Manual add item
+- Item list (editable): Name · Category (Food/Drinks) · Qty · Unit price
+- Footer: optional tax/tip
+- Primary CTA: **Save & Continue** → People
+
+### **2) People**
+- Quick add participant names
+- Mark **Payer**
+- Primary CTA: **Continue to Share**
+
+### **3) Share & Results**
+- Generate shareable link
+- Copy/share link
+- **Host-only Results Panel**: per-person totals, leftovers, export
+
+### **Public Link Flow**
+- **Landing**: pick your name or add new (if allowed)
+- **Claim Items**: tap **I had this** (+1) or **Shared**
+- **Confirm** → minimal **Thank you** screen
+
+---
+
+## 2. Image → JSON Parsing (Gemini)
+
+**Flow:**
+1. Upload bill image(s)
+2. Backend calls Gemini with **system prompt**
+3. Gemini returns **normalized JSON**
+4. JSON populates bill items
+
+**System Prompt (template):**
+```
+You are an assistant that extracts line items from restaurant receipts.
+Return ONLY JSON matching the schema.
+
+- Identify line items (name, category Food/Drinks, unit_price, quantity)
+- Ignore totals, change due
+- Merge duplicates by name
+- Service charge/tax as type="surcharge"
+- Confidence score per item
+- Return valid JSON only
+```
+
+**Output Schema:**
+```json
+{
+  "vendor": { "name": string|null, "address": string|null, "datetime": string|null },
+  "currency": string,
+  "items": [
+    {
+      "name": string,
+      "category": "Food"|"Drinks",
+      "unit_price": number,
+      "quantity": number,
+      "type": "item"|"surcharge",
+      "confidence": number,
+      "notes": string|null
+    }
+  ],
+  "meta": { "subtotal": number|null, "service": number|null, "tax": number|null, "total": number|null }
+}
+```
+
+**Example:**
+```json
+{
+  "vendor": { "name": "Trattoria Roma", "address": null, "datetime": "2025-09-10T20:41:00" },
+  "currency": "EUR",
+  "items": [
+    { "name": "Margherita Pizza", "category": "Food", "unit_price": 12.5, "quantity": 2, "type": "item", "confidence": 0.96, "notes": null },
+    { "name": "Coke", "category": "Drinks", "unit_price": 3.0, "quantity": 3, "type": "item", "confidence": 0.98, "notes": null },
+    { "name": "Service Charge", "category": "Food", "unit_price": 6.0, "quantity": 1, "type": "surcharge", "confidence": 0.9, "notes": "10%" }
+  ],
+  "meta": { "subtotal": 33.5, "service": 6.0, "tax": null, "total": 39.5 }
+}
+```
+
+---
+
+## 3. Claiming & Sharing Items
+
+**Options per item:**
+- **I had this** → exclusive claim of 1 unit
+- **Shared** → joins shared pool
+
+**Shared logic:**
+- First sharer defines pool size (1..remaining qty)
+- Price = (unit_price × qty_shared_pool) ÷ members
+- Others can join/leave pool
+- Exclusive and shared claims can coexist
+
+**UI Example (Public Link):**
+- Item: “Pizza · €12.50 · 2 left”
+- Buttons: **I had this** | **Shared (3 people)**
+- Running total footer
+
+---
+
+## 4. Host Results
+
+Host-only results include:
+- Per person: exclusive items, shared items, subtotal
+- Totals with surcharges prorated
+- Leftover items (assign to payer or split evenly)
+- Export (CSV/Copy)
+
+---
+
+## 5. Data Model
+
+**Bill**
+- id, creatorId, currency, createdAt, linkToken
+
+**Item**
+- id, billId, name, category, unit_price, qty_total, type, qty_shared_pool
+
+**Claim (exclusive)**
+- id, billId, itemId, participantId, qty_claimed
+
+**SharedMember**
+- id, itemId, participantId
+
+**Participant**
+- id, billId, name, isPayer
+
+**Derived:**
+- Remaining qty = total − exclusive − shared_pool
+- Shared portion = (price × pool) ÷ members
+
+---
+
+## 6. APIs
+
+**Public**
+- `GET /public/:token` → bill (no results)
+- `POST /public/:token/claim-exclusive` → claim units
+- `POST /public/:token/shared-init` → create shared pool
+- `POST /public/:token/shared-join` → join shared pool
+- `POST /public/:token/shared-leave` → leave shared pool
+
+**Host**
+- `POST /ai/parse-bill` → Gemini JSON
+- `GET /bills/:id/results` → per-person totals
+- `POST /bills/:id/lock` → optional
+
+---
+
+## 7. Edge Cases
+
+- Shared pool with only one member → they pay full
+- More people than pool units → still split evenly
+- Leftover items tracked explicitly
+- Ambiguous OCR lines flagged with low confidence
+
+---
+
+## 8. Rounding
+
+- Use decimal math
+- Round final per-person total at 2 decimals
+- Keep penny drift in a **pennies bucket** (assigned to payer or highest totals)
+
+---
+
+## 9. Acceptance Checklist
+
+- [ ] Parse bill from image → JSON  
+- [ ] Edit items manually  
+- [ ] Add participants, mark payer  
+- [ ] Generate shareable link  
+- [ ] Claim/Share items via link  
+- [ ] Host-only results with totals  
+- [ ] Quantities respected (no over-claim)  
+- [ ] Leftovers visible to host  
+- [ ] Rounding handled  
+
+alwaysApply: true
+---

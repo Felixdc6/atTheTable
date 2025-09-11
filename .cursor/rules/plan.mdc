@@ -1,0 +1,216 @@
+---
+description: This rule is keep the plan on rails, so the app does not get bloated with un needed features
+alwaysApply: false
+---
+# Step-wise Plan: Bill Splitting Web App
+
+This document describes the detailed plan for building the bill splitting web app using **Supabase (database & authentication)**, **Python (FastAPI) backend**, and **React (Vite + TypeScript + Tailwind + shadcn/ui) frontend**.
+
+---
+
+## 0) Architecture Snapshot
+
+- **Frontend (React/Vite)**  
+  - For hosts (logged-in creators) and participants (public link).  
+  - Uses Supabase for authentication and TanStack Query for data fetching.  
+  - Styling via Tailwind + shadcn/ui.  
+
+- **Backend (FastAPI, Python)**  
+  - AI parsing with Gemini API.  
+  - Public link APIs for claim/share flows.  
+  - Supabase service role key for DB writes (not exposed to frontend).  
+
+- **Database (Supabase Postgres)**  
+  - Tables for bills, items, participants, claims, shared members, submissions.  
+  - Row Level Security for host-only access.  
+
+- **Storage**  
+  - Supabase Storage for receipt images.  
+
+- **Realtime**  
+  - Supabase Realtime for live updates of claims and results.  
+
+---
+
+## 1) Repository & Tooling
+
+- Monorepo structure:
+  ```
+  at-the-table/
+    frontend/
+    backend/
+    supabase/
+  ```
+
+- Tools:  
+  - Node.js (18+) with pnpm or npm  
+  - Python (3.11+) with uv or poetry  
+  - Docker (optional)  
+
+---
+
+## 2) Supabase Setup
+
+1. Create a Supabase project.  
+2. Create a **Storage bucket** for `receipts`.  
+3. Capture environment secrets:  
+   - `SUPABASE_URL`, `SUPABASE_ANON_KEY` (frontend)  
+   - `SUPABASE_SERVICE_ROLE_KEY` (backend)  
+
+---
+
+## 3) Database Schema
+
+- **bills**: Bill details, creator, link token hash.  
+- **participants**: People in the bill, payer flag.  
+- **items**: Bill items (food, drinks, surcharges).  
+- **claims**: Exclusive claims of items.  
+- **shared_members**: Participants in a shared pool for an item.  
+- **submissions**: Participant confirmation status.  
+
+### Additional considerations
+- Enums for categories (`Food`, `Drinks`) and item type (`item`, `surcharge`).  
+- Views for counters (exclusive vs shared claims).  
+- Indexes for performance.  
+- Row Level Security policies for host-only access.  
+
+---
+
+## 4) Backend (FastAPI, Python)
+
+### Responsibilities
+- Bill parsing (`/ai/parse-bill`) using Gemini API.  
+- Public endpoints for participants (`/public/:token/*`).  
+- Share link management.  
+- Transactions with concurrency checks (ensuring no over-claims).  
+- Hashing link tokens for secure storage.  
+
+### Public Endpoints
+- Get bill payload.  
+- Claim exclusive items.  
+- Initialize shared pool.  
+- Join/leave shared pool.  
+- Submit selections.  
+
+### Host Endpoints
+- Parse bill images.  
+- View results per bill.  
+- Lock bill (optional).  
+
+---
+
+## 5) Gemini Integration
+
+- Images uploaded to storage.  
+- Backend fetches signed URLs and sends them to Gemini with a system prompt.  
+- Gemini returns normalized JSON for bill items.  
+- JSON validated and written to Supabase.  
+
+---
+
+## 6) Frontend (React + Vite + Tailwind + shadcn/ui)
+
+### Tools
+- React with Vite + TypeScript.  
+- TailwindCSS for styling.  
+- shadcn/ui for UI components.  
+- TanStack Query for data fetching.  
+- React Router for navigation.  
+
+### File Structure
+```
+src/
+  lib/
+  routes/
+    host/
+      BillSetup.tsx
+      People.tsx
+      ShareAndResults.tsx
+    public/
+      Landing.tsx
+      Claim.tsx
+      ThankYou.tsx
+  components/
+    FileDropzone.tsx
+    ItemRow.tsx
+    QtyControl.tsx
+    PersonRow.tsx
+```
+
+### Host Screens
+- **Bill Setup**: Upload, parse, and edit bill items.  
+- **People**: Add participants and mark payer.  
+- **Share & Results**: Generate link, monitor live results.  
+
+### Public Link Screens
+- **Landing**: Select or create participant name.  
+- **Claim**: Claim items exclusively or via shared pool.  
+- **Thank You**: Confirmation screen.  
+
+---
+
+## 7) Share Link Flow
+
+- Host generates link with random token.  
+- Token hashed and stored in DB.  
+- Public URL delivered to participants.  
+- Public users interact only via backend, not direct DB.  
+
+---
+
+## 8) Concurrency & Integrity
+
+- Claims validated in DB transactions.  
+- Exclusive + shared claims must not exceed total quantity.  
+- Shared pool initialized only once.  
+- Realtime updates push changes to host results.  
+
+---
+
+## 9) Totals & Rounding
+
+- Participant totals = exclusive claims + shared shares + prorated surcharges.  
+- Round at per-person total (2 decimals).  
+- Handle rounding drift with a small adjustment bucket.  
+
+---
+
+## 10) Authentication & Permissions
+
+- Host: Supabase Auth (email or OAuth).  
+- RLS ensures only creator can manage their bill.  
+- Public participants: anonymous, backend only.  
+
+---
+
+## 11) Testing
+
+- **Backend**: unit tests for Gemini parsing and endpoints.  
+- **Frontend**: E2E with Playwright.  
+- **Concurrency tests**: simulate parallel claims.  
+- **Contract tests**: schema consistency between frontend and backend.  
+
+---
+
+## 12) Deployment
+
+- **Supabase**: managed project.  
+- **Backend**: FastAPI with Docker, deploy to Fly.io/Render/Railway/Cloud Run.  
+- **Frontend**: React app deployed on Vercel/Netlify.  
+- **Domains**: e.g., `app.domain.com` (frontend) and `api.domain.com` (backend).  
+- **Monitoring**: Sentry or similar for backend; Supabase logs for DB.  
+
+---
+
+## Phase Plan (Suggested Timeline)
+
+1. Supabase setup and schema.  
+2. Backend scaffold with mock parsing.  
+3. Frontend scaffold with host flows.  
+4. Public link flows and APIs.  
+5. Realtime updates for results.  
+6. Gemini integration with validation.  
+7. Testing and rounding edge cases.  
+8. Deployment to production.  
+
+---
