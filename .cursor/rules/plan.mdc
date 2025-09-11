@@ -45,7 +45,7 @@ This document describes the detailed plan for building the bill splitting web ap
 - Tools:  
   - Node.js (18+) with pnpm or npm  
   - Python (3.11+) with uv or poetry  
-  - Docker (optional)  
+  - fastapi
 
 ---
 
