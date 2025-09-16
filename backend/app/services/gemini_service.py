@@ -1,103 +1,136 @@
-import os
-import json
-from typing import Dict, Any, Optional
-from dotenv import load_dotenv
 from google import genai
-from PIL import Image
-import io
+import os
+from dotenv import load_dotenv
+from typing import Union, BinaryIO
+import json
 
 class GeminiService:
-    """Service for handling Gemini AI operations"""
+    """
+    Service for processing bill images using Google's Gemini AI.
+    Takes an image as input and returns parsed bill data in JSON format.
+    """
     
     def __init__(self):
-        # Load environment variables from multiple sources
-        load_dotenv("env/config.env")  # Local config file
-        load_dotenv()  # System environment variables
+        # Load environment variables
+        load_dotenv("env/config.env")
         
         # Get API key from environment
         self.api_key = os.getenv("GEMINI_API_KEY")
         if not self.api_key:
-            raise ValueError(
-                "GEMINI_API_KEY not found. Please set it in:\n"
-                "1. env/config.env file, or\n"
-                "2. System environment variables"
-            )
+            raise ValueError("GEMINI_API_KEY not found in environment variables")
         
-        # Initialize Gemini client
+        # Initialize client with API key
         self.client = genai.Client(api_key=self.api_key)
+    
+    def parse_bill_image(self, image_path: str) -> dict:
+        """
+        Parse a bill image and return structured JSON data.
         
-        # System prompt for bill parsing
-        self.system_prompt = os.getenv(
-            "SYSTEM_PROMPT", 
-            """You are an assistant that extracts line items from restaurant receipts.
-Return ONLY JSON matching the schema.
-
-- Identify line items (name, category Food/Drinks, unit_price, quantity)
-- Ignore totals, change due
-- Merge duplicates by name
-- Service charge/tax as type="surcharge"
-- Confidence score per item
-- Return valid JSON only"""
+        Args:
+            image_path (str): Path to the image file to process
+            
+        Returns:
+            dict: Parsed bill data in JSON format
+        """
+        # Upload the image file to Gemini
+        file_ref = self.client.files.upload(file=image_path)
+        
+        # Generate content using the uploaded image
+        resp = self.client.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            contents=["what has been ordered on the bill? Group: Drinks, Food. Show unit prices in euros.Return in json format.", file_ref],
         )
-    
-    async def parse_bill_image(self, image_content: bytes, content_type: str) -> Dict[str, Any]:
-        """
-        Parse a bill image using Gemini AI
-        """
+        
+        # Parse the response text as JSON
         try:
-            # Upload image to Gemini
-            file_ref = self.client.files.upload(
-                file=io.BytesIO(image_content),
-                mime_type=content_type
-            )
+            # Clean the response text (remove markdown code blocks)
+            cleaned_text = resp.text.strip()
+            if cleaned_text.startswith('```json'):
+                cleaned_text = cleaned_text[7:]  # Remove ```json
+            if cleaned_text.endswith('```'):
+                cleaned_text = cleaned_text[:-3]  # Remove ```
+            cleaned_text = cleaned_text.strip()
             
-            # Generate content with system prompt and image
-            response = self.client.models.generate_content(
-                model="gemini-2.5-flash-lite",
-                contents=[self.system_prompt, file_ref]
-            )
-            
-            # Parse JSON response
-            result = json.loads(response.text)
-            
-            # Validate the response structure
-            self._validate_bill_structure(result)
-            
-            return result
-            
+            raw_data = json.loads(cleaned_text)
+            # Transform the response to match our expected format
+            return self._transform_gemini_response(raw_data)
         except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON response from Gemini: {e}")
-        except Exception as e:
-            raise Exception(f"Error parsing bill with Gemini: {e}")
+            # If JSON parsing fails, return the raw text wrapped in a structure
+            return {"raw_response": resp.text, "error": f"Failed to parse JSON response: {str(e)}"}
     
-    def _validate_bill_structure(self, data: Dict[str, Any]) -> None:
+    def parse_bill_from_bytes(self, image_bytes: bytes, filename: str = "bill.jpg") -> dict:
         """
-        Validate that the parsed bill has the expected structure
-        """
-        required_fields = ["vendor", "currency", "items", "meta"]
+        Parse a bill image from bytes and return structured JSON data.
         
-        for field in required_fields:
-            if field not in data:
-                raise ValueError(f"Missing required field: {field}")
-        
-        # Validate items structure
-        if not isinstance(data["items"], list):
-            raise ValueError("Items must be a list")
-        
-        for item in data["items"]:
-            if not all(key in item for key in ["name", "category", "unit_price", "quantity", "type"]):
-                raise ValueError("Invalid item structure")
-    
-    def test_connection(self) -> bool:
+        Args:
+            image_bytes (bytes): Image data as bytes
+            filename (str): Name for the temporary file
+            
+        Returns:
+            dict: Parsed bill data in JSON format
         """
-        Test if Gemini service is working
-        """
+        import tempfile
+        
+        # Create a temporary file to store the image bytes
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{filename.split('.')[-1]}") as temp_file:
+            temp_file.write(image_bytes)
+            temp_path = temp_file.name
+        
         try:
-            # Simple test with text
-            response = self.client.models.generate_content(
-                model="gemini-2.5-flash-lite",
-                contents="Hello, respond with 'OK' if you can read this."
-            )
-            return "OK" in response.text
-        except Exception:
-            return False
+            # Parse the temporary file
+            result = self.parse_bill_image(temp_path)
+            return result
+        finally:
+            # Clean up the temporary file
+            os.unlink(temp_path)
+    
+    def _transform_gemini_response(self, raw_data: dict) -> dict:
+        """
+        Transform Gemini response to match our expected schema
+        """
+        items = []
+        
+        # Process Drinks
+        if "Drinks" in raw_data:
+            for drink in raw_data["Drinks"]:
+                items.append({
+                    "name": drink.get("item", ""),
+                    "category": "Drinks",
+                    "unit_price": float(drink.get("unit_price_eur", drink.get("unit_price_euros", 0))),
+                    "quantity": int(drink.get("quantity", 1)),
+                    "type": "item",
+                    "confidence": 0.95,
+                    "notes": None
+                })
+        
+        # Process Food
+        if "Food" in raw_data:
+            for food in raw_data["Food"]:
+                items.append({
+                    "name": food.get("item", ""),
+                    "category": "Food",
+                    "unit_price": float(food.get("unit_price_eur", food.get("unit_price_euros", 0))),
+                    "quantity": int(food.get("quantity", 1)),
+                    "type": "item",
+                    "confidence": 0.95,
+                    "notes": None
+                })
+        
+        # Calculate totals
+        subtotal = sum(item["unit_price"] * item["quantity"] for item in items)
+        
+        return {
+            "vendor": {
+                "name": None,
+                "address": None,
+                "datetime": None
+            },
+            "currency": "EUR",
+            "items": items,
+            "meta": {
+                "subtotal": float(subtotal),
+                "service": None,
+                "tax": None,
+                "total": float(subtotal)
+            }
+        }
